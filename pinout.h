@@ -8,6 +8,6 @@
 // 11 is used by Ethernet Shield
 // 12 is used by Ethernet Shield
 // 13 is used by Ethernet Shield
-#define STATUS_LED_RED A3
-#define STATUS_LED_GRN A4
+#define STATUS_LED_RED A4
+#define STATUS_LED_GRN A5
 

@@ -13,9 +13,9 @@
 
 */
 
-//#define DEBUG
+#define DEBUG
 
-#include <EthernetV2_0.h>
+#include <Ethernet.h>
 #include <NewPing.h>
 #include <PubSubClient.h>
 
@@ -56,6 +56,8 @@ void publishAllSensorValues(void);
 
 void publishChangedSensors(void);
 
+#define SENSE_NAME_LENGTH 32
+#define SENSE_VAL_LENGTH 8
 
 
 // Task Scheduler
@@ -258,18 +260,28 @@ void setup() {
 	taskScheduler.enableTask(t_status_led, true);
 
 	// Setup MQTT
-	status.setStatus(STATUS_BLINK_RED);
+	status.setStatus(STATUS_RED);
 	client.setServer(SERVER_IP, 1883);
 	client.setCallback(mqtt_callback);
 
 }
 
+//SENSE_NAME_LENGTH
+//SENSE_VAL_LENGTH
+
 void publishAllSensorValues(void) {
   uint8_t u8_i;
-  char psz_sensorName[32];
-  char psz_sensorValue[2];
-  for (u8_i = 0; u8_i <= NUM_OF_SENSORS; u8_i++){
+  char psz_sensorName[SENSE_NAME_LENGTH];
+  char psz_sensorValue[SENSE_VAL_LENGTH];
+  SERIAL_PRINTLN("All Sensors: ");
+  for (u8_i = 0; u8_i < NUM_OF_SENSORS; u8_i++){
+    memset(psz_sensorName, 0, SENSE_NAME_LENGTH*sizeof(char));
+    memset(psz_sensorValue, 0, SENSE_VAL_LENGTH*sizeof(char));
     getSensorNameValue(u8_i, psz_sensorName, psz_sensorValue);
+    SERIAL_PRINT("  ");
+    SERIAL_PRINT(psz_sensorName);
+    SERIAL_PRINT(": ");
+    SERIAL_PRINTLN(psz_sensorValue);
     client.publish(psz_sensorName, psz_sensorValue);
   } 
 }
@@ -278,11 +290,19 @@ void publishChangedSensors(void) {
   uint8_t u8_i;
   uint8_t u8_numOfSensorsToUpdate;
   uint8_t au8_sensorsToUpdate[NUM_OF_SENSORS];
-  char psz_sensorName[32];
-  char psz_sensorValue[2];
+  char psz_sensorName[SENSE_NAME_LENGTH];
+  char psz_sensorValue[SENSE_VAL_LENGTH];
   checkSensors(au8_sensorsToUpdate, &u8_numOfSensorsToUpdate);
+  if (u8_numOfSensorsToUpdate > 0)
+    SERIAL_PRINTLN("Changed Sensors: ");
   for (u8_i = 0; u8_i < u8_numOfSensorsToUpdate; u8_i++){
+    memset(psz_sensorName, 0, SENSE_NAME_LENGTH*sizeof(char));
+    memset(psz_sensorValue, 0, SENSE_VAL_LENGTH*sizeof(char));
     getSensorNameValue(au8_sensorsToUpdate[u8_i], psz_sensorName, psz_sensorValue);
+    SERIAL_PRINT("  ");
+    SERIAL_PRINT(psz_sensorName);
+    SERIAL_PRINT(": ");
+    SERIAL_PRINTLN(psz_sensorValue);
     client.publish(psz_sensorName, psz_sensorValue);
   }
 }
@@ -308,13 +328,13 @@ void loop() {
 	
 	if (!(ethernet_state & ETH_CONNECTED_MASK)) {
 		// No Ethernet
-		status.setStatus(STATUS_BLINK_RED);
+		status.setStatus(STATUS_RED);
 		disable_publishing();
 		mqtt_state = MQTT_STATE_NOT_SETUP;
 	} else {
 		if (!(mqtt_state & MQTT_STATE_CONNECTED_MASK)) {
 			// No MQTT Connection
-			status.setStatus(STATUS_YEL);
+			status.setStatus(STATUS_BLINK_RED);
 			disable_publishing();
 		} else {
 			// Normal Mode
