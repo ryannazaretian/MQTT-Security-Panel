@@ -3,6 +3,11 @@ I replaced my old 1990s security system with a more modern system. My home is al
 
 This security panel is built on an Arduino Mega 2560, Ethernet Shield, and a Screw Proto Shield. It's powered with POE, and my switch is on a UPS, so this does have a battery backup. 
 
+The status LED consists of two colors, red and green, and has 3 patterns:
+* Red Solid: Waiting on Ethernet connection
+* Red Blinking: Connecting to MQTT Server
+* Green Blinking: Connected & Running
+
 # Software
 You'll need a few 3rd party Arduino libraries:
 * MQTT Client: [PubSubClient](https://pubsubclient.knolleary.net/)
