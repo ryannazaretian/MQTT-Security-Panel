@@ -16,7 +16,6 @@
 #define DEBUG
 
 #include <Ethernet.h>
-#include <NewPing.h>
 #include <PubSubClient.h>
 
 #include "pinout.h"
@@ -33,7 +32,9 @@
 EthernetClient ethClient;
 
 // MQTT Setup
+#define MQTT_KEEPALIVE 1
 #define MQTT_STATE_RESET_WAIT 5000
+#define MQTT_VERSION MQTT_VERSION_3_1_1
 PubSubClient client(ethClient);
 
 // Status LED Setup
@@ -52,6 +53,7 @@ void loop_mqtt(void);
 void loop_toggle_door(void);
 
 void tcb_update_leds(void);
+void tcb_maintain_eth(void);
 void publishAllSensorValues(void);
 
 void publishChangedSensors(void);
@@ -61,20 +63,47 @@ void publishChangedSensors(void);
 
 
 // Task Scheduler
-#define TASK_RATE_MAINTAIN_ETH 60000
 #define TASK_RATE_BLINK_PERIOD 500
 #define TASK_RATE_RESET_ETH 5000
 #define TASK_RATE_RECONNECT_MQTT 5000
-#define TASK_RATE_SENSOR_PUBLISH_ALL 30000
+#define TASK_RATE_SENSOR_PUBLISH_ALL 10000
 #define TASK_RATE_SENSOR_CHANGE_NOTIFICATION 50
+#define TASK_RATE_MAINTAIN_ETH 60000
 
-SimpleTaskScheduler taskScheduler(3, TS_MILLIS);
+SimpleTaskScheduler taskScheduler(4, TS_MILLIS);
 uint8_t t_status_led = taskScheduler.addTask(tcb_update_leds, TASK_RATE_BLINK_PERIOD, true);
-uint8_t t_periodic_sensor_update = taskScheduler.addTask(publishAllSensorValues, TASK_RATE_SENSOR_PUBLISH_ALL, true);
-uint8_t t_sensor_change_notification = taskScheduler.addTask(publishChangedSensors, TASK_RATE_SENSOR_CHANGE_NOTIFICATION, true);
+uint8_t t_periodic_sensor_update = taskScheduler.addTask(publishAllSensorValues, TASK_RATE_SENSOR_PUBLISH_ALL, false);
+uint8_t t_sensor_change_notification = taskScheduler.addTask(publishChangedSensors, TASK_RATE_SENSOR_CHANGE_NOTIFICATION, false);
+uint8_t t_ethernet_maintain = taskScheduler.addTask(tcb_maintain_eth, TASK_RATE_MAINTAIN_ETH, true);
 
 void tcb_update_leds(void) {
 	status.update_leds();
+}
+
+void tcb_maintain_eth(void) {
+  SERIAL_PRINTLN("ETH: Maintain");
+  switch (Ethernet.maintain())
+        {
+          case 1:
+            //renewed fail
+            SERIAL_PRINTLN("ETH: Renew error");
+            break;
+          case 2:
+            //renewed success
+            SERIAL_PRINTLN("ETH: Renew ok");
+            //print your local IP address:
+            break;
+          case 3:
+            //rebind fail
+            SERIAL_PRINTLN("ETH: Rebind error");
+            break;
+          case 4:
+            //rebind success
+            SERIAL_PRINTLN("ETH: Rebind ok");
+            break;
+          default:
+            break;
+        }
 }
 
 
@@ -93,8 +122,47 @@ void mqtt_callback(char* psz_topic, uint8_t* pu8_payload, unsigned int len) {
 	SERIAL_PRINTLN(psz_payload);	
 }
 
+void print_mqtt_state(void) {
+    switch(client.state()){
+      case MQTT_CONNECTION_TIMEOUT:
+          SERIAL_PRINTLN("MQTT_CONNECTION_TIMEOUT");
+          break;
+      case MQTT_CONNECTION_LOST:
+          SERIAL_PRINTLN("MQTT_CONNECTION_LOST");
+          break;
+      case MQTT_CONNECT_FAILED:
+          SERIAL_PRINTLN("MQTT_CONNECT_FAILED");
+          break;
+      case MQTT_DISCONNECTED:
+          SERIAL_PRINTLN("MQTT_DISCONNECTED");
+          break;
+      case MQTT_CONNECTED:
+          SERIAL_PRINTLN("MQTT_CONNECTED");
+          break;
+      case MQTT_CONNECT_BAD_PROTOCOL:
+          SERIAL_PRINTLN("MQTT_CONNECT_BAD_PROTOCOL");
+          break;
+      case MQTT_CONNECT_BAD_CLIENT_ID:
+          SERIAL_PRINTLN("MQTT_CONNECT_BAD_CLIENT_ID");
+          break;
+      case MQTT_CONNECT_UNAVAILABLE:
+          SERIAL_PRINTLN("MQTT_CONNECT_UNAVAILABLE");
+          break;
+      case MQTT_CONNECT_BAD_CREDENTIALS:
+          SERIAL_PRINTLN("MQTT_CONNECT_BAD_CREDENTIALS");
+          break;
+      case MQTT_CONNECT_UNAUTHORIZED:
+          SERIAL_PRINTLN("MQTT_CONNECT_UNAUTHORIZED");
+          break;
+      default:
+          SERIAL_PRINTLN("Undefined");
+          break;
+    }
+}
+
 void loop_mqtt(MqttState *pe_MQTT_STATE_state) {
 	static unsigned long ul_delay_trigger;
+  int8_t i8_mqtt_status;
 	switch(*pe_MQTT_STATE_state) {
 		case MQTT_STATE_NOT_SETUP:
 			*pe_MQTT_STATE_state = MQTT_STATE_CONNECTING;
@@ -102,16 +170,15 @@ void loop_mqtt(MqttState *pe_MQTT_STATE_state) {
 		case MQTT_STATE_CONNECTING:
       SERIAL_PRINTLN("MQTT: Connecting...");
 			if (client.connect("securityClient", USERNAME, PASSWORD)) {
-				SERIAL_PRINTLN("MQTT:  Connected");
+				SERIAL_PRINTLN("MQTT: Connected");
 				
         // Once connected & subscribed, publish an announcement...
         client.publish("securityClient", "started");
         
 				*pe_MQTT_STATE_state = MQTT_STATE_CONNECTED;
 			} else {
-				SERIAL_PRINT("MQTT: Error, RC=");
-				SERIAL_PRINT(client.state());
-				SERIAL_PRINTLN(", Retrying...");
+				SERIAL_PRINT("MQTT Disconnected: ");
+        print_mqtt_state();
 				ul_delay_trigger = millis() + MQTT_STATE_RESET_WAIT;
 				*pe_MQTT_STATE_state = MQTT_STATE_DELAY;
 			}
@@ -121,8 +188,9 @@ void loop_mqtt(MqttState *pe_MQTT_STATE_state) {
 				*pe_MQTT_STATE_state = MQTT_STATE_CONNECTING;
       break;
 		case MQTT_STATE_CONNECTED:
-			if (!client.connected()) {
-				SERIAL_PRINTLN("Lost MQTT Connection");
+      if (!client.loop()) {
+        SERIAL_PRINT("MQTT Disconnected: ");
+        print_mqtt_state();
 				*pe_MQTT_STATE_state = MQTT_STATE_CONNECTING;
 			}
       break;
@@ -131,131 +199,23 @@ void loop_mqtt(MqttState *pe_MQTT_STATE_state) {
 	}
 }
 
-
-
-void loop_ethernet(EthernetState *pe_ethernet_state) {
-	static unsigned long ul_delay_trigger;
-	switch(*pe_ethernet_state) {
-		case ETH_NOT_SETUP:
-			*pe_ethernet_state = ETH_TOGGLE_RESET;
-			break;
-			
-		case ETH_TOGGLE_RESET:
-			SERIAL_PRINTLN("ETH: Toggling Ethernet Reset pin... ");
-			digitalWrite(ETH_RST, HIGH);
-			ul_delay_trigger = millis() + ETH_RESET_ASSERT;
-			*pe_ethernet_state = ETH_DELAY_TOGGLE_RESET;
-			break;
-		case ETH_DELAY_TOGGLE_RESET:
-			if (millis() > ul_delay_trigger) {
-				SERIAL_PRINTLN("ETH: Waiting for Ethernet Control to come out of reset... ");
-				digitalWrite(ETH_RST, LOW);
-				ul_delay_trigger = millis() + ETH_RESET_WAIT;
-				*pe_ethernet_state = ETH_DELAY_IN_RESET;
-			}
-			break;
-		case ETH_DELAY_IN_RESET:
-			if (millis() > ul_delay_trigger) {
-				SERIAL_PRINTLN("ETH: Out of reset.");
-        *pe_ethernet_state = ETH_CONNECTING;
-			}
-     break;
-    case ETH_CONNECTING:
-        SERIAL_PRINTLN("ETH: Connecting...");
-				Ethernet.begin(MAC_ADDRESS, CLIENT_IP) ;
-        ul_delay_trigger = millis() + ETH_CONNECT_WAIT;
-        *pe_ethernet_state = ETH_CONNECTING_DELAY;
-        break;
-     case ETH_CONNECTING_DELAY:
-        if (millis() > ul_delay_trigger) {
-				SERIAL_PRINT("ETH: ");
-				if (checkEthernet()) {
-					SERIAL_PRINTLN("Connected.");
-					*pe_ethernet_state = ETH_CONNECTED_MAINTAIN;
-				} else {
-					SERIAL_PRINTLN("Failed to connect. Resetting...");
-					*pe_ethernet_state = ETH_TOGGLE_RESET;
-				}
-			}
-			break;
-		case ETH_CONNECTED_MAINTAIN:
-			if (!checkEthernet()) {
-				SERIAL_PRINTLN("ETH: Lost connection.");
-				*pe_ethernet_state = ETH_TOGGLE_RESET;
-			} else {
-				SERIAL_PRINT("ETH: Performing maintenance... ");
-				switch (Ethernet.maintain())
-				{
-					case 1:
-						//renewed fail
-						SERIAL_PRINTLN("Renew error");
-						*pe_ethernet_state = ETH_TOGGLE_RESET;
-						break;
-					case 2:
-						//renewed success
-						SERIAL_PRINTLN("Renew ok");
-						//print your local IP address:
-						ul_delay_trigger = millis() + TASK_RATE_MAINTAIN_ETH;
-						*pe_ethernet_state = ETH_CONNECTED_DELAY_MAINTAIN;
-						break;
-					case 3:
-						//rebind fail
-						SERIAL_PRINTLN("Rebind error");
-						*pe_ethernet_state = ETH_TOGGLE_RESET;
-						break;
-					case 4:
-						//rebind success
-						SERIAL_PRINTLN("Rebind ok");
-						ul_delay_trigger = millis() + TASK_RATE_MAINTAIN_ETH;
-						*pe_ethernet_state = ETH_CONNECTED_DELAY_MAINTAIN;
-
-						break;
-					default:
-            SERIAL_PRINTLN("Done");
-						ul_delay_trigger = millis() + TASK_RATE_MAINTAIN_ETH;
-						*pe_ethernet_state = ETH_CONNECTED_DELAY_MAINTAIN;
-						break;
-				}
-			}
-			break;
-		case ETH_CONNECTED_DELAY_MAINTAIN:
-			if (!checkEthernet()) {
-					SERIAL_PRINTLN("ETH: Lost connection.");
-					*pe_ethernet_state = ETH_TOGGLE_RESET;
-				}
-			if (millis() > ul_delay_trigger)
-				*pe_ethernet_state = ETH_CONNECTED_MAINTAIN;
-			break;
-		default:
-			*pe_ethernet_state = ETH_NOT_SETUP;
-	}
-}
-
-bool checkEthernet(void) {
-//  return true;
-  bool is_valid = false;
-  for (byte thisByte = 0; thisByte < 4; thisByte++) {
-    if (Ethernet.localIP()[thisByte] != 0) {
-      is_valid = true;
-    }
-  }
-  return is_valid;
-}
-
 void setup() {
+  
+  
 	// Setup input pins
 	analogReference(DEFAULT);
   setupSensors();
 
 	// Setup output pins
-	pinMode(ETH_RST,						OUTPUT);
   pinMode(SDCARD_CS,OUTPUT);
   digitalWrite(SDCARD_CS,HIGH);//Deselect the SD card
-	digitalWrite(ETH_RST, LOW);
 
 	START_SERIAL(9600);
   SERIAL_PRINTLN();
 	SERIAL_PRINTLN("MASTER RESET");
+
+  Ethernet.begin(MAC_ADDRESS, CLIENT_IP) ;
+  delay(TASK_RATE_RESET_ETH);
 	
 	taskScheduler.enableTask(t_status_led, true);
 
@@ -263,11 +223,8 @@ void setup() {
 	status.setStatus(STATUS_RED);
 	client.setServer(SERVER_IP, 1883);
 	client.setCallback(mqtt_callback);
-
 }
 
-//SENSE_NAME_LENGTH
-//SENSE_VAL_LENGTH
 
 void publishAllSensorValues(void) {
   uint8_t u8_i;
@@ -282,7 +239,11 @@ void publishAllSensorValues(void) {
     SERIAL_PRINT(psz_sensorName);
     SERIAL_PRINT(": ");
     SERIAL_PRINTLN(psz_sensorValue);
-    client.publish(psz_sensorName, psz_sensorValue);
+    SERIAL_PRINT("Publishing: ");
+    if (client.publish(psz_sensorName, psz_sensorValue) && client.loop())
+        SERIAL_PRINTLN("Successful");
+    else
+        SERIAL_PRINTLN("Failed");
   } 
 }
 
@@ -303,13 +264,17 @@ void publishChangedSensors(void) {
     SERIAL_PRINT(psz_sensorName);
     SERIAL_PRINT(": ");
     SERIAL_PRINTLN(psz_sensorValue);
-    client.publish(psz_sensorName, psz_sensorValue);
+    SERIAL_PRINT("Publishing: ");
+    if (client.publish(psz_sensorName, psz_sensorValue) && client.loop())
+        SERIAL_PRINTLN("Successful");
+    else
+        SERIAL_PRINTLN("Failed");
   }
 }
 
 void enable_publishing(void) {
-  taskScheduler.enableTask(t_periodic_sensor_update, true);
-  taskScheduler.enableTask(t_sensor_change_notification, true);
+ taskScheduler.enableTask(t_periodic_sensor_update, true);
+ taskScheduler.enableTask(t_sensor_change_notification, true);
 }
 
 void disable_publishing(void) {
@@ -321,28 +286,14 @@ void loop() {
 	static EthernetState ethernet_state;
 	static MqttState mqtt_state;
 	loop_mqtt(&mqtt_state);
-	loop_ethernet(&ethernet_state);
   taskScheduler.loop();
 
-
-	
-	if (!(ethernet_state & ETH_CONNECTED_MASK)) {
-		// No Ethernet
-		status.setStatus(STATUS_RED);
-		disable_publishing();
-		mqtt_state = MQTT_STATE_NOT_SETUP;
-	} else {
-		if (!(mqtt_state & MQTT_STATE_CONNECTED_MASK)) {
-			// No MQTT Connection
-			status.setStatus(STATUS_BLINK_RED);
-			disable_publishing();
-		} else {
-			// Normal Mode
-			enable_publishing();
-      status.setStatus(STATUS_BLINK_GRN);
-			client.loop();
-      
-		}
-	}
+  if (client.connected()) {
+       status.setStatus(STATUS_BLINK_GRN);   
+       enable_publishing();
+  } else {
+      disable_publishing();
+      status.setStatus(STATUS_BLINK_RED);
+  }
 }
 
